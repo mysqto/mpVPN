@@ -1,6 +1,6 @@
 #!/bin/sh
 
-. /etc/mptun.conf
+. /etc/mpvpn.conf
 
 usage()
 {
