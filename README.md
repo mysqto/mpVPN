@@ -7,7 +7,7 @@ A easy to use wrap for @cloudwu 's mptun as VPN server or client.
 ```
 git clone https://github.com/mysqto/mpVPN.git
 cd mpVPN
-sudo make install
+sudo make install prefix=/path/to/install
 ```
 
 # Usage

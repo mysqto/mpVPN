@@ -1,0 +1,136 @@
+#!/bin/sh
+
+. /etc/mptun.conf
+
+usage()
+{
+	echo "usage: $0 start|stop server|client"
+}
+
+start_server()
+{
+	mptun -i $intf -p $port -v $serverip -t $clientip -k $password &
+	
+	# Turn on IP forwarding
+	sysctl -w net.ipv4.ip_forward=1
+
+	# Configure IP address and MTU of VPN interface
+
+	echo "net = $net"
+
+	ip addr add $net dev $intf
+	ip link set $intf mtu $mtu
+	ip link set $intf up
+
+	# turn on NAT over VPN
+	if !(iptables-save -t nat | grep -q "mpvpm"); then
+		iptables -t nat -A POSTROUTING -s $net ! -d $net -m comment \
+					--comment "mpvpm" -j MASQUERADE
+	fi
+	iptables -A FORWARD -s $net -m state --state RELATED,ESTABLISHED -j ACCEPT
+	iptables -A FORWARD -d $net -j ACCEPT
+
+	# Turn on MSS fix (MSS = MTU - TCP header - IP header)
+	iptables -t mangle -A FORWARD -p tcp -m tcp \
+				--tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+}
+
+stop_server()
+{
+	killall mptun
+	
+	# Turn off NAT over VPN
+	iptables -t nat -D POSTROUTING -s $net ! -d $net -m comment \
+					--comment "mpvpn" -j MASQUERADE
+
+	iptables -D FORWARD -s $net -m state --state RELATED,ESTABLISHED -j ACCEPT
+	iptables -D FORWARD -d $net -j ACCEPT
+
+	# Turn off MSS fix (MSS = MTU - TCP header - IP header)
+	iptables -t mangle -D FORWARD -p tcp -m tcp \
+				--tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+}
+
+start_client()
+{
+	mptun -i tun0 -p $port -v $clientip -t $serverip -r $server -k $password &
+
+
+	# Turn on IP forwarding
+	sysctl -w net.ipv4.ip_forward=1
+
+	# Configure IP address and MTU of VPN interface
+	ip addr add $net dev $intf
+	ip link set $intf mtu $mtu
+	ip link set $intf up
+
+	# Turn on NAT over VPN
+	iptables -t nat -A POSTROUTING -o $intf -j MASQUERADE
+	iptables -I FORWARD 1 -i $intf -m state --state RELATED,ESTABLISHED -j ACCEPT
+	iptables -I FORWARD 1 -o $intf -j ACCEPT
+
+	# Direct route to VPN server's public IP via current gateway
+	ip route add $server via $(ip route show 0/0 | sed -e 's/.* via \([^ ]*\).*/\1/')
+
+	# redirect default route using two /1 subnets
+	ip route add   0/1 dev $intf
+	ip route add 128/1 dev $intf
+}
+
+stop_client()
+{
+	killall mptun
+	# turn off NAT over VPN
+	iptables -t nat -D POSTROUTING -o $intf -j MASQUERADE
+	iptables -D FORWARD -i $intf -m state --state RELATED,ESTABLISHED -j ACCEPT
+	iptables -D FORWARD -o $intf -j ACCEPT
+
+	# Restore routing table
+	ip route del $server
+	ip route del   0/1
+	ip route del 128/1
+}
+
+case "$1" in
+        start)
+		case "$2" in
+			server)
+                		echo "starting server"
+				start_server
+               			;;
+
+			client)
+                		echo "starting client"
+				start_client
+               			;;
+			
+			*)
+				usage
+                		exit 1
+				;;
+		esac
+		;;
+        stop)
+		case "$2" in
+			server)
+                		echo "stopping server"
+				stop_server
+               			;;
+
+			client)
+                		echo "stopping client"
+				stop_client
+               			;;
+			
+			*)
+				usage
+                		exit 1
+				;;
+		esac
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac
